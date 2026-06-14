@@ -13,6 +13,11 @@
 # while still having a generous free-tier rate limit.
 GEMINI_CHAT_MODEL = "gemini-2.5-flash"
 
+# Groq LLM — used for fast nodes (query generation, insight extraction).
+# Free tier: 14,400 requests/day, ~500 tokens/second.
+GROQ_CHAT_MODEL = "llama-3.3-70b-versatile"
+GROQ_TEMPERATURE_PRECISE = 0.1
+
 # Embedding model used by VectorMemory (changed to working gemini-embedding-2).
 GEMINI_EMBEDDING_MODEL = "models/gemini-embedding-2"
 
@@ -54,8 +59,8 @@ INSIGHTS_CONTENT_CHARS = 6000
 # Search / scraper limits
 # ---------------------------------------------------------------------------
 
-MAX_SEARCH_RESULTS_PER_QUERY = 5   # Tavily results per query
-MAX_PAGES_TO_SCRAPE = 7            # Top N search results to scrape
+MAX_SEARCH_RESULTS_PER_QUERY = 3   # Tavily results per query (reduced for dev speed)
+MAX_PAGES_TO_SCRAPE = 3            # Top N search results to scrape (reduced for dev speed)
 VECTOR_MEMORY_RETRIEVE_LIMIT = 6   # Past insights to pull into context
 GRAPH_MEMORY_RETRIEVE_LIMIT = 10   # Graph edges to pull into context
 ASK_ENDPOINT_MEMORY_LIMIT = 8      # Insights retrieved for /ask endpoint

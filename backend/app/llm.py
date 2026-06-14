@@ -1,22 +1,25 @@
 # llm.py
-# Shared LLM factory and retry-decorated invoke helper.
+# Shared LLM factories and retry-decorated invoke helper.
 #
-# Why this exists:
-#   gemini-2.5-flash (free tier) is capped at 15 RPM.  The research pipeline
-#   makes 3 sequential LLM calls per session, so bursts or concurrent
-#   requests can easily trigger HTTP 429 responses.  Wrapping every call
-#   with tenacity's exponential back-off means the pipeline self-heals
-#   instead of crashing.
+# LLM Strategy:
+#   - Groq (llama-3.3-70b):  generate_queries_node, extract_insights_node
+#       Free tier: 14,400 requests/day, ~500 tokens/second. No cold starts.
+#   - Gemini 2.5 Flash:       generate_report_node (final report only)
+#       Free tier: 15 RPM, 500 RPD. Used sparingly for maximum quality.
+#
+# Both LLMs are wrapped with the same tenacity retry decorator so rate-limit
+# errors from either provider are handled identically.
 #
 # Usage:
-#   from app.llm import get_llm, llm_invoke
-#   response = llm_invoke(get_llm(), my_prompt)
+#   from app.llm import get_llm, get_groq_llm, llm_invoke
+#   response = llm_invoke(get_groq_llm(), my_prompt)
 
 import os
 import logging
 from typing import Union
 
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from langchain_core.messages import BaseMessage
 
 from tenacity import (
@@ -31,6 +34,8 @@ from app.config import (
     GEMINI_CHAT_MODEL,
     LLM_TEMPERATURE_PRECISE,
     LLM_TEMPERATURE_CREATIVE,
+    GROQ_CHAT_MODEL,
+    GROQ_TEMPERATURE_PRECISE,
     RETRY_MAX_ATTEMPTS,
     RETRY_WAIT_MIN_SECONDS,
     RETRY_WAIT_MAX_SECONDS,
@@ -45,13 +50,15 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _is_retryable(exc: BaseException) -> bool:
-    """Return True for HTTP 429 (rate limit) and 500-level server errors."""
+    """Return True for HTTP 429 (rate limit) and 500-level server errors from any provider."""
     msg = str(exc).lower()
     retryable_signals = [
         "429",
         "quota",
         "rate limit",
+        "rate_limit_exceeded",
         "resource exhausted",
+        "groq",
         "503",
         "500",
         "internal server error",
@@ -61,20 +68,18 @@ def _is_retryable(exc: BaseException) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# LLM factory
+# LLM factories
 # ---------------------------------------------------------------------------
 
 def get_llm(creative: bool = False) -> ChatGoogleGenerativeAI:
     """
     Return a configured Gemini 2.5 Flash LLM instance.
+    Use only for generate_report_node where quality matters most.
 
     Args:
         creative: If True, uses a higher temperature suitable for report
                   synthesis.  If False (default), uses the precise/low
                   temperature for extraction and query generation.
-
-    Returns:
-        A ChatGoogleGenerativeAI instance ready for invocation.
     """
     temperature = LLM_TEMPERATURE_CREATIVE if creative else LLM_TEMPERATURE_PRECISE
     return ChatGoogleGenerativeAI(
@@ -84,8 +89,21 @@ def get_llm(creative: bool = False) -> ChatGoogleGenerativeAI:
     )
 
 
+def get_groq_llm() -> ChatGroq:
+    """
+    Return a configured Groq LLM instance (llama-3.3-70b-versatile).
+    Used for fast, high-throughput nodes (query generation, insight extraction).
+    Groq free tier: 14,400 requests/day, ~500 tokens/second — no cold starts.
+    """
+    return ChatGroq(
+        model=GROQ_CHAT_MODEL,
+        groq_api_key=os.getenv("GROQ_API_KEY"),
+        temperature=GROQ_TEMPERATURE_PRECISE,
+    )
+
+
 # ---------------------------------------------------------------------------
-# Retry-wrapped invoke
+# Retry-wrapped invoke (works for both Gemini and Groq)
 # ---------------------------------------------------------------------------
 
 @retry(
@@ -99,15 +117,13 @@ def get_llm(creative: bool = False) -> ChatGoogleGenerativeAI:
     before_sleep=before_sleep_log(logger, logging.WARNING),
     reraise=True,
 )
-def llm_invoke(llm: ChatGoogleGenerativeAI, prompt: Union[str, list]) -> BaseMessage:
+def llm_invoke(llm: Union[ChatGoogleGenerativeAI, ChatGroq], prompt: Union[str, list]) -> BaseMessage:
     """
     Invoke the LLM with automatic retry on rate-limit and server errors.
-
-    Uses exponential back-off (configured in config.py).  All retryable
-    errors are logged at WARNING level before each sleep.
+    Works identically for both Gemini and Groq instances.
 
     Args:
-        llm:    A ChatGoogleGenerativeAI instance (from get_llm()).
+        llm:    A ChatGoogleGenerativeAI or ChatGroq instance.
         prompt: A string prompt or list of LangChain messages.
 
     Returns:

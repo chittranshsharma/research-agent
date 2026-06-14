@@ -18,6 +18,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional
+from supabase import create_client, Client
 
 from app.agent.graph import research_graph
 from app.memory.vector import VectorMemory
@@ -109,11 +110,23 @@ class SessionSummary(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Supabase Client Helper
+# ---------------------------------------------------------------------------
+
+def get_supabase_client() -> Client:
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_KEY")
+    if not supabase_url or not supabase_key:
+        raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set.")
+    return create_client(supabase_url, supabase_key)
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
 @app.post("/research", response_model=ResearchResponse, summary="Run a full research session")
-async def run_research(request: ResearchRequest):
+def run_research(request: ResearchRequest):
     """
     Invoke the LangGraph research pipeline for the given topic.
     Returns the generated report, citations, entities, and relationships.
@@ -142,7 +155,7 @@ async def run_research(request: ResearchRequest):
         logger.error(f"Research graph failed for session {session_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Research pipeline failed: {str(e)}")
 
-    return ResearchResponse(
+    response_data = ResearchResponse(
         session_id=session_id,
         topic=request.topic,
         report=final_state.get("report", ""),
@@ -151,13 +164,29 @@ async def run_research(request: ResearchRequest):
         relationships=final_state.get("relationships", []),
     )
 
+    try:
+        supabase = get_supabase_client()
+        supabase.table("research_sessions").insert({
+            "session_id": session_id,
+            "topic": request.topic,
+            "report": response_data.report,
+            "citations": response_data.citations,
+            "entities": response_data.entities,
+            "relationships": response_data.relationships,
+        }).execute()
+        logger.info(f"Saved session {session_id} to research_sessions table.")
+    except Exception as e:
+        logger.error(f"Failed to save session to research_sessions table: {e}")
+
+    return response_data
+
 
 @app.get(
     "/memory/{session_id}",
     response_model=list[dict],
     summary="Get all stored insights for a session",
 )
-async def get_session_memory(session_id: str):
+def get_session_memory(session_id: str):
     """
     Retrieve all insights stored in VectorMemory for a given session ID.
     """
@@ -176,23 +205,54 @@ async def get_session_memory(session_id: str):
     response_model=list[dict],
     summary="List all past research sessions",
 )
-async def list_sessions():
+def list_sessions():
     """
     Return a deduplicated list of all sessions (session_id, topic, created_at)
-    stored in Supabase.
+    stored in the research_sessions Supabase table.
     """
     logger.info("Listing all past research sessions.")
     try:
-        vector_mem = VectorMemory()
-        sessions = vector_mem.get_all_sessions()
-        return sessions
+        supabase = get_supabase_client()
+        response = supabase.table("research_sessions").select("session_id, topic, created_at").order("created_at", desc=True).execute()
+        return response.data or []
     except Exception as e:
         logger.error(f"Failed to list sessions: {e}")
         raise HTTPException(status_code=500, detail=f"Session listing failed: {str(e)}")
 
 
+@app.get(
+    "/research/{session_id}",
+    response_model=ResearchResponse,
+    summary="Get a past research session",
+)
+def get_research_session(session_id: str):
+    """
+    Retrieve a full research session (report, citations, graph data) from Supabase.
+    """
+    logger.info(f"Fetching full research session: {session_id}")
+    try:
+        supabase = get_supabase_client()
+        response = supabase.table("research_sessions").select("*").eq("session_id", session_id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Session not found")
+        data = response.data[0]
+        return ResearchResponse(
+            session_id=data["session_id"],
+            topic=data["topic"],
+            report=data["report"],
+            citations=data.get("citations") or [],
+            entities=data.get("entities") or [],
+            relationships=data.get("relationships") or [],
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to fetch session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch session: {str(e)}")
+
+
 @app.post("/ask", response_model=AskResponse, summary="Ask a follow-up question using memory")
-async def ask_question(request: AskRequest):
+def ask_question(request: AskRequest):
     """
     Answer a follow-up question by retrieving relevant past insights from
     VectorMemory and generating a grounded answer with Gemini.
@@ -201,7 +261,21 @@ async def ask_question(request: AskRequest):
 
     sources: list[dict] = []
     context_text = ""
+    session_context = ""
 
+    # 1. Retrieve the active session's report and topic to anchor the LLM context
+    if request.session_id:
+        try:
+            supabase = get_supabase_client()
+            session_res = supabase.table("research_sessions").select("topic, report").eq("session_id", request.session_id).execute()
+            if session_res.data:
+                session_data = session_res.data[0]
+                session_context = f"Active Research Topic: {session_data['topic']}\nActive Research Report Content:\n{session_data['report']}"
+                logger.info(f"Loaded active session context for session {request.session_id}.")
+        except Exception as e:
+            logger.error(f"Failed to fetch session context for /ask: {e}")
+
+    # 2. Retrieve semantic memory insights
     try:
         vector_mem = VectorMemory()
         past_insights = vector_mem.retrieve(request.question, limit=ASK_ENDPOINT_MEMORY_LIMIT)
@@ -222,21 +296,16 @@ async def ask_question(request: AskRequest):
 
     llm = get_llm(creative=False)
 
-    if context_text:
-        prompt = f"""You are a knowledgeable research assistant. 
-Answer the following question using the provided context from past research sessions.
-Be specific and cite the context where relevant.
+    prompt = f"""You are a knowledgeable research assistant. 
+Answer the following follow-up question. 
 
-Context:
-{context_text}
+First, consider the context of the active research session (the topic and full report content) if provided:
+{session_context or "No active research report context provided."}
 
-Question: {request.question}
+Next, consider the following retrieved memory insights:
+{context_text or "No memory insights found."}
 
-Answer:"""
-    else:
-        prompt = f"""You are a knowledgeable research assistant. 
-Answer the following question as accurately as possible. Note that no prior 
-research context was found for this question.
+Use the above details to write a grounded, accurate answer to the question. Do not hallucinate or confuse terms. If the question refers to concepts/names within the active research session, make sure to answer in that context.
 
 Question: {request.question}
 
