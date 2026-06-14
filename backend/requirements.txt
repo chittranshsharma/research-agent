@@ -1,0 +1,15 @@
+langgraph
+langchain
+langchain-google-genai
+langchain-community
+supabase
+neo4j
+tavily-python
+fastapi
+uvicorn[standard]
+python-dotenv
+beautifulsoup4
+requests
+tiktoken
+pydantic
+tenacity
