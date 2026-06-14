@@ -2,7 +2,11 @@ import {
   ResearchResponse,
   SessionSummary,
   MemoryInsight,
+  MemoryItem,
   AskResponse,
+  Entity,
+  Relationship,
+  Citation,
 } from './types';
 
 // Use the actual backend URL directly to avoid Next.js proxy timeouts on long requests.
@@ -10,7 +14,7 @@ import {
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 /**
- * Trigger a new research session or continue an existing one.
+ * Trigger a new research session or continue an existing one (blocking).
  */
 export async function startResearch(
   topic: string,
@@ -28,6 +32,64 @@ export async function startResearch(
   }
 
   return response.json();
+}
+
+/**
+ * Stream a new research session via Server-Sent Events.
+ * Calls onStatus for status updates, onChunk for report text chunks,
+ * and onComplete once the full result arrives.
+ */
+export async function streamResearch(
+  topic: string,
+  onStatus: (message: string) => void,
+  onChunk: (chunk: string) => void,
+  onComplete: (data: {
+    session_id: string;
+    entities: Entity[];
+    relationships: Relationship[];
+    citations: Citation[];
+  }) => void
+): Promise<void> {
+  const response = await fetch(`${BASE_URL}/research/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ topic }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || 'Failed to start streaming research');
+  }
+
+  const reader = response.body?.getReader();
+  const decoder = new TextDecoder();
+
+  if (!reader) throw new Error('No response body');
+
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.type === 'status') onStatus(data.message);
+          else if (data.type === 'chunk') onChunk(data.content);
+          else if (data.type === 'complete') onComplete(data);
+          else if (data.type === 'error') throw new Error(data.message);
+        } catch (e) {
+          console.error('SSE parse error:', e);
+        }
+      }
+    }
+  }
 }
 
 /**
@@ -66,6 +128,24 @@ export async function getSessionMemory(
 
   if (!response.ok) {
     throw new Error('Failed to fetch session memory');
+  }
+
+  return response.json();
+}
+
+/**
+ * Search across ALL stored memory insights using vector similarity.
+ */
+export async function searchMemory(
+  query: string,
+  limit: number = 10
+): Promise<{ query: string; results: MemoryItem[]; count: number }> {
+  const response = await fetch(
+    `${BASE_URL}/memory/search?q=${encodeURIComponent(query)}&limit=${limit}`
+  );
+
+  if (!response.ok) {
+    throw new Error('Memory search failed');
   }
 
   return response.json();

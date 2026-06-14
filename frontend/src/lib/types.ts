@@ -42,3 +42,14 @@ export interface AskResponse {
   answer: string;
   sources: Citation[];
 }
+
+export interface MemoryItem {
+  id?: string;
+  session_id: string;
+  topic: string;
+  insight: string;
+  source_url: string;
+  source_title: string;
+  similarity?: number;
+  created_at?: string;
+}

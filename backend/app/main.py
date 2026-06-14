@@ -1,10 +1,12 @@
 # main.py
 # FastAPI application entrypoint for the Research Agent backend.
-# Exposes four endpoints:
-#   POST /research  — run a full research session
+# Exposes endpoints:
+#   POST /research           — run a full research session (blocking)
+#   POST /research/stream    — stream research results via SSE
 #   GET  /memory/{session_id} — get all stored insights for a session
-#   GET  /sessions  — list all past research sessions
-#   POST /ask       — answer a follow-up question using memory
+#   GET  /memory/search      — vector search across ALL session memory
+#   GET  /sessions           — list all past research sessions
+#   POST /ask                — answer a follow-up question using memory
 
 import os
 import logging
@@ -14,7 +16,11 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 load_dotenv()  # Load .env before anything else imports os.getenv()
 
+import json
+import asyncio
+import concurrent.futures
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -181,6 +187,124 @@ def run_research(request: ResearchRequest):
     return response_data
 
 
+@app.post("/research/stream", summary="Stream a research session via SSE")
+async def stream_research(request: ResearchRequest):
+    """
+    Run the full LangGraph research pipeline and stream the report
+    back to the client token-by-token using Server-Sent Events.
+    """
+
+    async def generate():
+        session_id = request.session_id or str(uuid.uuid4())
+        logger.info(f"[stream] Starting streaming session {session_id} for: {request.topic}")
+
+        def sse(payload: dict) -> str:
+            return "data: " + json.dumps(payload) + "\n\n"
+
+        yield sse({"type": "status", "message": "Retrieving memory..."})
+        await asyncio.sleep(0.1)
+
+        yield sse({"type": "status", "message": "Searching the web..."})
+
+        # Run synchronous LangGraph pipeline in a thread-pool executor
+        loop = asyncio.get_event_loop()
+        initial_state = {
+            "topic": request.topic,
+            "session_id": session_id,
+            "search_queries": [],
+            "search_results": [],
+            "scraped_content": [],
+            "extracted_insights": [],
+            "entities": [],
+            "relationships": [],
+            "memory_context": "",
+            "report": "",
+            "citations": [],
+            "messages": [],
+        }
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                result = await loop.run_in_executor(
+                    pool,
+                    lambda: research_graph.invoke(initial_state)
+                )
+        except Exception as e:
+            logger.error(f"[stream] Pipeline failed: {e}")
+            yield sse({"type": "error", "message": str(e)})
+            return
+
+        yield sse({"type": "status", "message": "Extracting insights..."})
+        await asyncio.sleep(0.1)
+
+        # Stream report word-by-word in chunks of 5 words
+        report = result.get("report", "")
+        words = report.split(" ")
+
+        yield sse({"type": "status", "message": "Generating report..."})
+
+        chunk = ""
+        for i, word in enumerate(words):
+            chunk += word + " "
+            if i % 5 == 0 and chunk:
+                yield sse({"type": "chunk", "content": chunk})
+                chunk = ""
+                await asyncio.sleep(0.01)
+        if chunk:
+            yield sse({"type": "chunk", "content": chunk})
+
+        entities = result.get("entities", [])
+        relationships = result.get("relationships", [])
+        citations = result.get("citations", [])
+
+        # Persist session to Supabase
+        try:
+            supabase_client = get_supabase_client()
+            supabase_client.table("research_sessions").insert({
+                "session_id": session_id,
+                "topic": request.topic,
+                "report": report,
+                "citations": [c if isinstance(c, dict) else vars(c) for c in citations],
+                "entities": [e if isinstance(e, dict) else vars(e) for e in entities],
+                "relationships": [r if isinstance(r, dict) else vars(r) for r in relationships],
+            }).execute()
+            logger.info(f"[stream] Saved session {session_id}")
+        except Exception as e:
+            logger.warning(f"[stream] Failed to save session: {e}")
+
+        yield sse({
+            "type": "complete",
+            "session_id": session_id,
+            "entities": [e if isinstance(e, dict) else vars(e) for e in entities],
+            "relationships": [r if isinstance(r, dict) else vars(r) for r in relationships],
+            "citations": [c if isinstance(c, dict) else vars(c) for c in citations],
+        })
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+@app.get("/memory/search", summary="Search across all stored memory insights")
+async def search_memory(q: str, limit: int = 10):
+    """
+    Perform a semantic (vector) search across ALL past session insights.
+    Returns the most similar results ranked by cosine similarity.
+    """
+    logger.info(f"Memory search query: '{q}' (limit={limit})")
+    try:
+        vector_mem = VectorMemory()
+        results = vector_mem.retrieve(q, limit=limit)
+        return {"query": q, "results": results, "count": len(results)}
+    except Exception as e:
+        logger.error(f"Memory search failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get(
     "/memory/{session_id}",
     response_model=list[dict],
@@ -324,6 +448,7 @@ Answer:"""
 # ---------------------------------------------------------------------------
 # Health check
 # ---------------------------------------------------------------------------
+
 
 @app.get("/health", summary="Health check")
 async def health_check():

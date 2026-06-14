@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
 import { Loader2, Send, BookOpen, Share2 } from 'lucide-react';
-import { startResearch, getSessions, getSessionMemory, askQuestion, getResearchSession } from '@/lib/api';
-import { ResearchResponse, SessionSummary, AskResponse } from '@/lib/types';
+import { streamResearch, getSessions, getSessionMemory, askQuestion, getResearchSession } from '@/lib/api';
+import { ResearchResponse, SessionSummary, AskResponse, Entity, Relationship, Citation } from '@/lib/types';
 import { Sidebar } from '@/components/Sidebar';
 import { ReportViewer } from '@/components/ReportViewer';
 import { KnowledgeGraph } from '@/components/KnowledgeGraph';
@@ -22,7 +22,16 @@ export default function ResearchView() {
   const [researchData, setResearchData] = useState<ResearchResponse | null>(null);
   const [loading, setLoading] = useState(isNew);
   const [error, setError] = useState('');
-  
+
+  // Streaming state
+  const [currentStatus, setCurrentStatus] = useState('');
+  const [streamingReport, setStreamingReport] = useState('');
+  const [streamedEntities, setStreamedEntities] = useState<Entity[]>([]);
+  const [streamedRelationships, setStreamedRelationships] = useState<Relationship[]>([]);
+  const [streamedCitations, setStreamedCitations] = useState<Citation[]>([]);
+  const [streamComplete, setStreamComplete] = useState(false);
+  const sessionIdRef = useRef<string | null>(null);
+
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [memoryCount, setMemoryCount] = useState<number>(0);
 
@@ -39,14 +48,32 @@ export default function ResearchView() {
         setSessions(pastSessions);
 
         if (isNew && topicParam) {
-          // Trigger new research
-          const res = await startResearch(topicParam);
-          setResearchData(res);
-          // Refresh sessions list
+          // Use streaming for new research
+          setCurrentStatus('Starting research...');
+
+          await streamResearch(
+            topicParam,
+            // onStatus
+            (msg) => setCurrentStatus(msg),
+            // onChunk — progressively build the report
+            (chunk) => setStreamingReport(prev => prev + chunk),
+            // onComplete
+            (data) => {
+              sessionIdRef.current = data.session_id;
+              setStreamedEntities(data.entities);
+              setStreamedRelationships(data.relationships);
+              setStreamedCitations(data.citations);
+              setStreamComplete(true);
+              setCurrentStatus('');
+              // Push real session URL without full reload
+              window.history.replaceState({}, '', `/research/${data.session_id}`);
+            }
+          );
+
+          // Refresh sessions list after stream completes
           const updatedSessions = await getSessions();
           setSessions(updatedSessions);
-          // Push actual URL without full reload
-          window.history.replaceState({}, '', `/research/${res.session_id}`);
+
         } else if (!isNew) {
           const sessionData = await getResearchSession(rawSessionId);
           setResearchData(sessionData);
@@ -58,11 +85,29 @@ export default function ResearchView() {
       }
     }
     init();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isNew, topicParam, rawSessionId]);
+
+  // Sync streamed data into researchData once complete
+  useEffect(() => {
+    if (streamComplete && topicParam && sessionIdRef.current) {
+      setResearchData({
+        session_id: sessionIdRef.current,
+        topic: topicParam,
+        report: streamingReport,
+        entities: streamedEntities,
+        relationships: streamedRelationships,
+        citations: streamedCitations,
+      });
+      setLoading(false);
+    }
+  }, [streamComplete, streamingReport, streamedEntities, streamedRelationships, streamedCitations, topicParam]);
 
   useEffect(() => {
     if (researchData?.session_id) {
-      getSessionMemory(researchData.session_id).then(mem => setMemoryCount(mem.length)).catch(console.error);
+      getSessionMemory(researchData.session_id)
+        .then(mem => setMemoryCount(mem.length))
+        .catch(console.error);
     }
   }, [researchData?.session_id]);
 
@@ -96,12 +141,22 @@ export default function ResearchView() {
     );
   }
 
+  // Determine what to render in the report area
+  const isStreaming = isNew && !streamComplete && loading === false ? false : isNew && !streamComplete;
+  const showStreamingProgress = isNew && !streamComplete && (streamingReport || currentStatus);
+  const showFinalReport = researchData && streamComplete || (researchData && !isNew);
+
+  // Entities/citations/citations to pass to side panel during streaming
+  const displayEntities = streamComplete ? streamedEntities : (researchData?.entities || []);
+  const displayRelationships = streamComplete ? streamedRelationships : (researchData?.relationships || []);
+  const displayCitations = streamComplete ? streamedCitations : (researchData?.citations || []);
+
   return (
     <div className="flex flex-1 h-[calc(100vh-3.5rem)] overflow-hidden">
       {/* Left Sidebar */}
       <div className="hidden md:block shrink-0">
-        <Sidebar 
-          sessions={sessions} 
+        <Sidebar
+          sessions={sessions}
           currentSessionId={researchData?.session_id !== 'new' ? researchData?.session_id : undefined}
           memoryInsightCount={memoryCount}
         />
@@ -111,7 +166,44 @@ export default function ResearchView() {
       <div className="flex-1 flex flex-col min-w-0 border-r border-border bg-background">
         <ScrollArea className="flex-1 px-4 py-8 md:px-8 lg:px-12">
           <div className="max-w-3xl mx-auto pb-20">
-            {loading ? (
+
+            {/* Animated status bar */}
+            {currentStatus && (
+              <div className="flex items-center gap-2 text-sm text-blue-400 mb-4">
+                <div className="w-2 h-2 bg-blue-400 rounded-full animate-pulse" />
+                {currentStatus}
+              </div>
+            )}
+
+            {/* Streaming report progressively builds up */}
+            {showStreamingProgress && (
+              <div>
+                {topicParam && (
+                  <div className="mb-8">
+                    <h1 className="text-3xl sm:text-4xl font-bold text-white leading-tight mb-4">
+                      {topicParam}
+                    </h1>
+                    <div className="flex items-center gap-3 text-sm text-muted-foreground border-b border-border pb-6">
+                      <span className="flex items-center gap-1.5"><BookOpen className="h-4 w-4" /> Generating Report...</span>
+                    </div>
+                  </div>
+                )}
+                {streamingReport ? (
+                  <ReportViewer content={streamingReport} />
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-20 space-y-4">
+                    <Loader2 className="h-10 w-10 animate-spin text-primary" />
+                    <h2 className="text-xl font-semibold text-white">Researching...</h2>
+                    <p className="text-muted-foreground text-center max-w-sm">
+                      The Research Agent is searching the web, scraping pages, extracting insights, and synthesizing a report.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Old-style blocking loading (fallback for non-streaming) */}
+            {!showStreamingProgress && loading && (
               <div className="flex flex-col items-center justify-center py-20 space-y-4">
                 <Loader2 className="h-10 w-10 animate-spin text-primary" />
                 <h2 className="text-xl font-semibold text-white">Researching...</h2>
@@ -119,20 +211,23 @@ export default function ResearchView() {
                   The Research Agent is searching the web, scraping pages, extracting insights, and synthesizing a report.
                 </p>
               </div>
-            ) : researchData ? (
+            )}
+
+            {/* Final or loaded report */}
+            {showFinalReport && (
               <div className="animate-in fade-in slide-in-from-bottom-4 duration-700">
                 <div className="mb-8">
                   <h1 className="text-3xl sm:text-4xl font-bold text-white leading-tight mb-4">
-                    {researchData.topic}
+                    {researchData!.topic}
                   </h1>
                   <div className="flex items-center gap-3 text-sm text-muted-foreground border-b border-border pb-6">
                     <span className="flex items-center gap-1.5"><BookOpen className="h-4 w-4" /> Comprehensive Report</span>
                     <span className="flex items-center gap-1.5"><Share2 className="h-4 w-4" /> Share</span>
                   </div>
                 </div>
-                <ReportViewer content={researchData.report} />
+                <ReportViewer content={researchData!.report} />
               </div>
-            ) : null}
+            )}
           </div>
         </ScrollArea>
       </div>
@@ -141,7 +236,7 @@ export default function ResearchView() {
       <div className="hidden xl:flex w-96 flex-col bg-muted/10 shrink-0">
         <ScrollArea className="flex-1 p-4">
           <div className="space-y-8">
-            
+
             {/* Follow-up Section */}
             <section>
               <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">
@@ -164,19 +259,19 @@ export default function ResearchView() {
                   )}
                 </div>
                 <form onSubmit={handleAsk} className="relative mt-2">
-                  <Input 
+                  <Input
                     value={question}
                     onChange={(e) => setQuestion(e.target.value)}
                     placeholder="Ask anything..."
                     className="pr-10 bg-background text-sm"
-                    disabled={asking || loading}
+                    disabled={asking || isStreaming}
                   />
-                  <Button 
-                    type="submit" 
-                    size="icon" 
-                    variant="ghost" 
+                  <Button
+                    type="submit"
+                    size="icon"
+                    variant="ghost"
                     className="absolute right-1 top-1/2 -translate-y-1/2 h-8 w-8 text-muted-foreground hover:text-white"
-                    disabled={asking || loading || !question.trim()}
+                    disabled={asking || isStreaming || !question.trim()}
                   >
                     <Send className="h-4 w-4" />
                   </Button>
@@ -189,17 +284,17 @@ export default function ResearchView() {
               <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">
                 Sources
               </h3>
-              {loading ? (
+              {isStreaming ? (
                 <div className="space-y-2">
                   {[1,2,3].map(i => <div key={i} className="h-12 bg-muted/50 rounded-md animate-pulse" />)}
                 </div>
-              ) : researchData?.citations?.length ? (
+              ) : displayCitations.length > 0 ? (
                 <div className="space-y-2">
-                  {researchData.citations.map((c, i) => (
-                    <a 
-                      key={i} 
-                      href={c.url} 
-                      target="_blank" 
+                  {displayCitations.map((c, i) => (
+                    <a
+                      key={i}
+                      href={c.url}
+                      target="_blank"
                       rel="noreferrer"
                       className="block p-3 rounded-md border border-border bg-card/30 hover:bg-card/80 transition-colors text-sm"
                     >
@@ -218,18 +313,18 @@ export default function ResearchView() {
               <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">
                 Knowledge Graph
               </h3>
-              {loading ? (
+              {isStreaming ? (
                 <div className="h-[300px] w-full bg-muted/50 rounded-md animate-pulse" />
               ) : (
                 <div className="h-[300px]">
-                  <KnowledgeGraph 
-                    entities={researchData?.entities || []} 
-                    relationships={researchData?.relationships || []} 
+                  <KnowledgeGraph
+                    entities={displayEntities}
+                    relationships={displayRelationships}
                   />
                 </div>
               )}
             </section>
-            
+
           </div>
         </ScrollArea>
       </div>

@@ -39,6 +39,9 @@ export default function RootLayout({
                 <Link href="/memory" className="transition-colors hover:text-foreground">
                   Memory
                 </Link>
+                <Link href="/memory/search" className="transition-colors hover:text-foreground">
+                  Search Memory
+                </Link>
                 <Link href="/sessions" className="transition-colors hover:text-foreground">
                   Sessions
                 </Link>
