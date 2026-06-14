@@ -2,12 +2,13 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
-import { Loader2, Send, BookOpen, Share2 } from 'lucide-react';
+import { Loader2, Send, BookOpen } from 'lucide-react';
 import { streamResearch, getSessions, getSessionMemory, askQuestion, getResearchSession } from '@/lib/api';
 import { ResearchResponse, SessionSummary, AskResponse, Entity, Relationship, Citation } from '@/lib/types';
 import { Sidebar } from '@/components/Sidebar';
 import { ReportViewer } from '@/components/ReportViewer';
 import { KnowledgeGraph } from '@/components/KnowledgeGraph';
+import { ExportButton } from '@/components/ExportButton';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -151,13 +152,17 @@ export default function ResearchView() {
   const displayRelationships = streamComplete ? streamedRelationships : (researchData?.relationships || []);
   const displayCitations = streamComplete ? streamedCitations : (researchData?.citations || []);
 
+  const activeSessionId = researchData?.session_id && researchData.session_id !== 'new'
+    ? researchData.session_id
+    : (sessionIdRef.current ?? undefined);
+
   return (
     <div className="flex flex-1 h-[calc(100vh-3.5rem)] overflow-hidden">
       {/* Left Sidebar */}
-      <div className="hidden md:block shrink-0">
+      <div className="hidden md:flex shrink-0">
         <Sidebar
           sessions={sessions}
-          currentSessionId={researchData?.session_id !== 'new' ? researchData?.session_id : undefined}
+          currentSessionId={activeSessionId}
           memoryInsightCount={memoryCount}
         />
       </div>
@@ -217,13 +222,23 @@ export default function ResearchView() {
             {showFinalReport && (
               <div className="animate-in fade-in slide-in-from-bottom-4 duration-700">
                 <div className="mb-8">
-                  <h1 className="text-3xl sm:text-4xl font-bold text-white leading-tight mb-4">
-                    {researchData!.topic}
-                  </h1>
-                  <div className="flex items-center gap-3 text-sm text-muted-foreground border-b border-border pb-6">
-                    <span className="flex items-center gap-1.5"><BookOpen className="h-4 w-4" /> Comprehensive Report</span>
-                    <span className="flex items-center gap-1.5"><Share2 className="h-4 w-4" /> Share</span>
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <h1 className="text-3xl sm:text-4xl font-bold text-white leading-tight">
+                        {researchData!.topic}
+                      </h1>
+                      <span className="text-xs text-muted-foreground flex items-center gap-1.5 mt-1">
+                        <BookOpen className="h-3 w-3" /> Comprehensive Report
+                      </span>
+                    </div>
+                    <ExportButton
+                      report={researchData!.report}
+                      topic={researchData!.topic}
+                      citations={displayCitations}
+                      sessionId={researchData!.session_id}
+                    />
                   </div>
+                  <div className="border-b border-border pb-4" />
                 </div>
                 <ReportViewer content={researchData!.report} />
               </div>

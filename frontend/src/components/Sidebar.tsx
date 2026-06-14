@@ -6,6 +6,7 @@ import { Plus, Database, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { SessionSummary } from '@/lib/types';
+import { RelatedSessions } from '@/components/RelatedSessions';
 
 
 interface SidebarProps {
@@ -16,7 +17,7 @@ interface SidebarProps {
 
 export function Sidebar({ sessions, currentSessionId, memoryInsightCount }: SidebarProps) {
   return (
-    <div className="flex h-full w-64 flex-col border-r border-border bg-background">
+    <div className="flex h-full w-64 flex-col border-r border-border bg-background min-h-0">
       <div className="p-4">
         <Link href="/">
           <Button className="w-full justify-start gap-2" variant="default">
@@ -72,6 +73,10 @@ export function Sidebar({ sessions, currentSessionId, memoryInsightCount }: Side
             </span>
           </div>
         </div>
+      )}
+
+      {currentSessionId && (
+        <RelatedSessions sessionId={currentSessionId} />
       )}
     </div>
   );

@@ -1,12 +1,16 @@
 # main.py
 # FastAPI application entrypoint for the Research Agent backend.
 # Exposes endpoints:
-#   POST /research           — run a full research session (blocking)
-#   POST /research/stream    — stream research results via SSE
-#   GET  /memory/{session_id} — get all stored insights for a session
-#   GET  /memory/search      — vector search across ALL session memory
-#   GET  /sessions           — list all past research sessions
-#   POST /ask                — answer a follow-up question using memory
+#   POST /research                      — run a full research session (blocking)
+#   POST /research/stream               — stream research results via SSE
+#   GET  /memory/{session_id}/freshness — get insights with freshness/decay scores
+#   GET  /memory/{session_id}           — get all stored insights for a session
+#   GET  /memory/search                 — vector search across ALL session memory
+#   GET  /sessions                      — list all past research sessions
+#   GET  /sessions/{session_id}/related — find sessions with similar topics
+#   GET  /research/{session_id}         — get a specific past session
+#   POST /ask                           — answer a follow-up question using memory
+#   GET  /health                        — health check
 
 import os
 import logging
@@ -305,6 +309,65 @@ async def search_memory(q: str, limit: int = 10):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/memory/{session_id}/freshness", summary="Get insights with freshness decay scores")
+async def get_memory_freshness(session_id: str):
+    """
+    Returns all insights for a session with freshness scores.
+    Freshness = 100 at creation, decays linearly to 0 at 90 days.
+    Insights older than 30 days are flagged as stale.
+    """
+    try:
+        supabase_client = get_supabase_client()
+        result = supabase_client.table("research_memory")\
+            .select("*")\
+            .eq("session_id", session_id)\
+            .order("created_at", desc=False)\
+            .execute()
+
+        from datetime import datetime, timezone
+
+        insights_with_freshness = []
+        for insight in result.data:
+            created_at = datetime.fromisoformat(
+                insight["created_at"].replace("Z", "+00:00")
+            )
+            now = datetime.now(timezone.utc)
+            age_days = (now - created_at).days
+
+            # Linear decay: 100 at day 0, 0 at day 90
+            freshness = max(0, 100 - (age_days / 90 * 100))
+            is_stale = age_days >= 30
+
+            # Build dict without embedding (can be very large)
+            insight_data = {k: v for k, v in insight.items() if k != "embedding"}
+            insights_with_freshness.append({
+                **insight_data,
+                "freshness_score": round(freshness, 1),
+                "age_days": age_days,
+                "is_stale": is_stale,
+                "decay_label": (
+                    "Fresh" if age_days < 7 else
+                    "Recent" if age_days < 30 else
+                    "Aging" if age_days < 60 else
+                    "Stale"
+                )
+            })
+
+        stale_count = sum(1 for i in insights_with_freshness if i["is_stale"])
+        total = len(insights_with_freshness)
+
+        return {
+            "session_id": session_id,
+            "insights": insights_with_freshness,
+            "total": total,
+            "stale_count": stale_count,
+            "needs_refresh": stale_count > total / 2 if total > 0 else False
+        }
+    except Exception as e:
+        logger.error(f"Freshness check failed for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get(
     "/memory/{session_id}",
     response_model=list[dict],
@@ -443,6 +506,58 @@ Answer:"""
         raise HTTPException(status_code=500, detail=f"Answer generation failed: {str(e)}")
 
     return AskResponse(answer=answer, sources=sources)
+
+
+@app.get("/sessions/{session_id}/related", summary="Find sessions with similar topics")
+async def get_related_sessions(session_id: str, limit: int = 3):
+    """
+    Find sessions with similar topics using vector similarity.
+    Embeds the current session's topic and finds nearest neighbours
+    in research_memory via VectorMemory, then maps back to unique sessions.
+    """
+    try:
+        supabase_client = get_supabase_client()
+
+        # Get current session topic
+        current = supabase_client.table("research_sessions")\
+            .select("topic")\
+            .eq("session_id", session_id)\
+            .limit(1)\
+            .execute()
+
+        if not current.data:
+            return {"related": []}
+
+        topic = current.data[0]["topic"]
+
+        # Find similar insights via vector search, then map to sessions
+        vector_mem = VectorMemory()
+        similar_insights = vector_mem.retrieve(topic, limit=20)
+
+        seen_sessions: set = set()
+        related_session_ids: list = []
+        for insight in similar_insights:
+            sid = insight.get("session_id")
+            if sid and sid != session_id and sid not in seen_sessions:
+                seen_sessions.add(sid)
+                related_session_ids.append(sid)
+                if len(related_session_ids) >= limit:
+                    break
+
+        if not related_session_ids:
+            return {"related": []}
+
+        # Fetch full session rows for those IDs
+        related = supabase_client.table("research_sessions")\
+            .select("session_id, topic, created_at")\
+            .in_("session_id", related_session_ids)\
+            .execute()
+
+        return {"related": related.data or []}
+
+    except Exception as e:
+        logger.error(f"Related sessions failed for {session_id}: {e}")
+        return {"related": []}
 
 
 # ---------------------------------------------------------------------------

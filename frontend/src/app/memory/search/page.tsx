@@ -39,7 +39,7 @@ export default function MemorySearchPage() {
       const data = await searchMemory(q.trim(), 10);
       setResults(data.results);
       setSearched(true);
-    } catch (e) {
+    } catch {
       setError('Search failed. Make sure you have run at least one research session.');
       setResults([]);
     } finally {

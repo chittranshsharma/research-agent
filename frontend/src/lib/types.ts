@@ -52,4 +52,11 @@ export interface MemoryItem {
   source_title: string;
   similarity?: number;
   created_at?: string;
+  freshness_score?: number;
+  age_days?: number;
+  is_stale?: boolean;
+  decay_label?: 'Fresh' | 'Recent' | 'Aging' | 'Stale';
 }
+
+// Alias used by RelatedSessions component
+export type Session = SessionSummary;

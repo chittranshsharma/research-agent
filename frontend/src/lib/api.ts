@@ -171,3 +171,34 @@ export async function askQuestion(
 
   return response.json();
 }
+
+/**
+ * Get freshness / decay scores for all insights in a session.
+ */
+export async function getMemoryFreshness(sessionId: string): Promise<{
+  session_id: string;
+  insights: (MemoryItem & {
+    freshness_score: number;
+    age_days: number;
+    is_stale: boolean;
+    decay_label: 'Fresh' | 'Recent' | 'Aging' | 'Stale';
+  })[];
+  total: number;
+  stale_count: number;
+  needs_refresh: boolean;
+}> {
+  const res = await fetch(`${BASE_URL}/memory/${sessionId}/freshness`);
+  if (!res.ok) throw new Error('Failed to fetch freshness data');
+  return res.json();
+}
+
+/**
+ * Find research sessions with topics similar to the given session.
+ */
+export async function getRelatedSessions(
+  sessionId: string
+): Promise<{ related: SessionSummary[] }> {
+  const res = await fetch(`${BASE_URL}/sessions/${sessionId}/related`);
+  if (!res.ok) return { related: [] };
+  return res.json();
+}

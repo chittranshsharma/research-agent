@@ -98,7 +98,7 @@ class VectorMemory:
                 "match_research_memory",
                 {
                     "query_embedding": query_embedding,
-                    "match_count": limit,
+                    "match_limit": limit,
                 },
             ).execute()
             results = response.data or []
