@@ -47,3 +47,7 @@ class AgentState(TypedDict):
 
     # LangGraph message history for conversational context
     messages: list
+
+    # Unique identifier of the authenticated user
+    user_id: str
+

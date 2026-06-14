@@ -23,7 +23,7 @@ load_dotenv()  # Load .env before anything else imports os.getenv()
 import json
 import asyncio
 import concurrent.futures
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -131,18 +131,38 @@ def get_supabase_client() -> Client:
     return create_client(supabase_url, supabase_key)
 
 
+def get_current_user(authorization: Optional[str] = Header(None)) -> any:
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization header missing")
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid Authorization header format. Must start with 'Bearer '"
+        )
+    token = authorization.split(" ")[1]
+    try:
+        supabase = get_supabase_client()
+        res = supabase.auth.get_user(token)
+        if not res or not res.user:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return res.user
+    except Exception as e:
+        logger.error(f"Authentication failed: {e}")
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
 @app.post("/research", response_model=ResearchResponse, summary="Run a full research session")
-def run_research(request: ResearchRequest):
+def run_research(request: ResearchRequest, current_user: any = Depends(get_current_user)):
     """
     Invoke the LangGraph research pipeline for the given topic.
     Returns the generated report, citations, entities, and relationships.
     """
     session_id = request.session_id or str(uuid.uuid4())
-    logger.info(f"Starting research session {session_id} for topic: {request.topic}")
+    logger.info(f"Starting research session {session_id} for topic: {request.topic} (user: {current_user.id})")
 
     initial_state = {
         "topic": request.topic,
@@ -157,6 +177,7 @@ def run_research(request: ResearchRequest):
         "report": "",
         "citations": [],
         "messages": [],
+        "user_id": current_user.id,
     }
 
     try:
@@ -183,6 +204,7 @@ def run_research(request: ResearchRequest):
             "citations": response_data.citations,
             "entities": response_data.entities,
             "relationships": response_data.relationships,
+            "user_id": current_user.id,
         }).execute()
         logger.info(f"Saved session {session_id} to research_sessions table.")
     except Exception as e:
@@ -192,7 +214,7 @@ def run_research(request: ResearchRequest):
 
 
 @app.post("/research/stream", summary="Stream a research session via SSE")
-async def stream_research(request: ResearchRequest):
+async def stream_research(request: ResearchRequest, current_user: any = Depends(get_current_user)):
     """
     Run the full LangGraph research pipeline and stream the report
     back to the client token-by-token using Server-Sent Events.
@@ -200,7 +222,8 @@ async def stream_research(request: ResearchRequest):
 
     async def generate():
         session_id = request.session_id or str(uuid.uuid4())
-        logger.info(f"[stream] Starting streaming session {session_id} for: {request.topic}")
+        user_id = current_user.id
+        logger.info(f"[stream] Starting streaming session {session_id} for: {request.topic} (user: {user_id})")
 
         def sse(payload: dict) -> str:
             return "data: " + json.dumps(payload) + "\n\n"
@@ -225,6 +248,7 @@ async def stream_research(request: ResearchRequest):
             "report": "",
             "citations": [],
             "messages": [],
+            "user_id": user_id,
         }
 
         try:
@@ -271,6 +295,7 @@ async def stream_research(request: ResearchRequest):
                 "citations": [c if isinstance(c, dict) else vars(c) for c in citations],
                 "entities": [e if isinstance(e, dict) else vars(e) for e in entities],
                 "relationships": [r if isinstance(r, dict) else vars(r) for r in relationships],
+                "user_id": user_id,
             }).execute()
             logger.info(f"[stream] Saved session {session_id}")
         except Exception as e:
@@ -294,15 +319,15 @@ async def stream_research(request: ResearchRequest):
     )
 
 @app.get("/memory/search", summary="Search across all stored memory insights")
-async def search_memory(q: str, limit: int = 10):
+async def search_memory(q: str, limit: int = 10, current_user: any = Depends(get_current_user)):
     """
     Perform a semantic (vector) search across ALL past session insights.
     Returns the most similar results ranked by cosine similarity.
     """
-    logger.info(f"Memory search query: '{q}' (limit={limit})")
+    logger.info(f"Memory search query: '{q}' (limit={limit}, user={current_user.id})")
     try:
         vector_mem = VectorMemory()
-        results = vector_mem.retrieve(q, limit=limit)
+        results = vector_mem.retrieve(q, limit=limit, user_id=current_user.id)
         return {"query": q, "results": results, "count": len(results)}
     except Exception as e:
         logger.error(f"Memory search failed: {e}")
@@ -310,7 +335,7 @@ async def search_memory(q: str, limit: int = 10):
 
 
 @app.get("/memory/{session_id}/freshness", summary="Get insights with freshness decay scores")
-async def get_memory_freshness(session_id: str):
+async def get_memory_freshness(session_id: str, current_user: any = Depends(get_current_user)):
     """
     Returns all insights for a session with freshness scores.
     Freshness = 100 at creation, decays linearly to 0 at 90 days.
@@ -321,6 +346,7 @@ async def get_memory_freshness(session_id: str):
         result = supabase_client.table("research_memory")\
             .select("*")\
             .eq("session_id", session_id)\
+            .eq("user_id", current_user.id)\
             .order("created_at", desc=False)\
             .execute()
 
@@ -373,14 +399,14 @@ async def get_memory_freshness(session_id: str):
     response_model=list[dict],
     summary="Get all stored insights for a session",
 )
-def get_session_memory(session_id: str):
+def get_session_memory(session_id: str, current_user: any = Depends(get_current_user)):
     """
     Retrieve all insights stored in VectorMemory for a given session ID.
     """
-    logger.info(f"Fetching memory for session: {session_id}")
+    logger.info(f"Fetching memory for session: {session_id} (user={current_user.id})")
     try:
         vector_mem = VectorMemory()
-        history = vector_mem.get_session_history(session_id)
+        history = vector_mem.get_session_history(session_id, user_id=current_user.id)
         return history
     except Exception as e:
         logger.error(f"Failed to fetch memory for session {session_id}: {e}")
@@ -392,15 +418,15 @@ def get_session_memory(session_id: str):
     response_model=list[dict],
     summary="List all past research sessions",
 )
-def list_sessions():
+def list_sessions(current_user: any = Depends(get_current_user)):
     """
     Return a deduplicated list of all sessions (session_id, topic, created_at)
     stored in the research_sessions Supabase table.
     """
-    logger.info("Listing all past research sessions.")
+    logger.info(f"Listing all past research sessions (user={current_user.id}).")
     try:
         supabase = get_supabase_client()
-        response = supabase.table("research_sessions").select("session_id, topic, created_at").order("created_at", desc=True).execute()
+        response = supabase.table("research_sessions").select("session_id, topic, created_at").eq("user_id", current_user.id).order("created_at", desc=True).execute()
         return response.data or []
     except Exception as e:
         logger.error(f"Failed to list sessions: {e}")
@@ -412,14 +438,14 @@ def list_sessions():
     response_model=ResearchResponse,
     summary="Get a past research session",
 )
-def get_research_session(session_id: str):
+def get_research_session(session_id: str, current_user: any = Depends(get_current_user)):
     """
     Retrieve a full research session (report, citations, graph data) from Supabase.
     """
-    logger.info(f"Fetching full research session: {session_id}")
+    logger.info(f"Fetching full research session: {session_id} (user={current_user.id})")
     try:
         supabase = get_supabase_client()
-        response = supabase.table("research_sessions").select("*").eq("session_id", session_id).execute()
+        response = supabase.table("research_sessions").select("*").eq("session_id", session_id).eq("user_id", current_user.id).execute()
         if not response.data:
             raise HTTPException(status_code=404, detail="Session not found")
         data = response.data[0]
@@ -439,12 +465,12 @@ def get_research_session(session_id: str):
 
 
 @app.post("/ask", response_model=AskResponse, summary="Ask a follow-up question using memory")
-def ask_question(request: AskRequest):
+def ask_question(request: AskRequest, current_user: any = Depends(get_current_user)):
     """
     Answer a follow-up question by retrieving relevant past insights from
     VectorMemory and generating a grounded answer with Gemini.
     """
-    logger.info(f"Answering question: {request.question}")
+    logger.info(f"Answering question: {request.question} (user={current_user.id})")
 
     sources: list[dict] = []
     context_text = ""
@@ -454,7 +480,7 @@ def ask_question(request: AskRequest):
     if request.session_id:
         try:
             supabase = get_supabase_client()
-            session_res = supabase.table("research_sessions").select("topic, report").eq("session_id", request.session_id).execute()
+            session_res = supabase.table("research_sessions").select("topic, report").eq("session_id", request.session_id).eq("user_id", current_user.id).execute()
             if session_res.data:
                 session_data = session_res.data[0]
                 session_context = f"Active Research Topic: {session_data['topic']}\nActive Research Report Content:\n{session_data['report']}"
@@ -465,7 +491,7 @@ def ask_question(request: AskRequest):
     # 2. Retrieve semantic memory insights
     try:
         vector_mem = VectorMemory()
-        past_insights = vector_mem.retrieve(request.question, limit=ASK_ENDPOINT_MEMORY_LIMIT)
+        past_insights = vector_mem.retrieve(request.question, limit=ASK_ENDPOINT_MEMORY_LIMIT, user_id=current_user.id)
         if past_insights:
             context_lines = []
             for item in past_insights:
@@ -509,7 +535,7 @@ Answer:"""
 
 
 @app.get("/sessions/{session_id}/related", summary="Find sessions with similar topics")
-async def get_related_sessions(session_id: str, limit: int = 3):
+async def get_related_sessions(session_id: str, limit: int = 3, current_user: any = Depends(get_current_user)):
     """
     Find sessions with similar topics using vector similarity.
     Embeds the current session's topic and finds nearest neighbours
@@ -522,6 +548,7 @@ async def get_related_sessions(session_id: str, limit: int = 3):
         current = supabase_client.table("research_sessions")\
             .select("topic")\
             .eq("session_id", session_id)\
+            .eq("user_id", current_user.id)\
             .limit(1)\
             .execute()
 
@@ -532,7 +559,7 @@ async def get_related_sessions(session_id: str, limit: int = 3):
 
         # Find similar insights via vector search, then map to sessions
         vector_mem = VectorMemory()
-        similar_insights = vector_mem.retrieve(topic, limit=20)
+        similar_insights = vector_mem.retrieve(topic, limit=20, user_id=current_user.id)
 
         seen_sessions: set = set()
         related_session_ids: list = []
@@ -551,6 +578,7 @@ async def get_related_sessions(session_id: str, limit: int = 3):
         related = supabase_client.table("research_sessions")\
             .select("session_id, topic, created_at")\
             .in_("session_id", related_session_ids)\
+            .eq("user_id", current_user.id)\
             .execute()
 
         return {"related": related.data or []}

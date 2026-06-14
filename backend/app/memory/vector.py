@@ -37,7 +37,6 @@ class VectorMemory:
         )
 
 
-
     def _embed(self, text: str) -> list[float]:
         """Embed a text string and return the embedding vector."""
         try:
@@ -53,6 +52,7 @@ class VectorMemory:
         insight: str,
         source_url: str,
         source_title: str,
+        user_id: str = None,
     ) -> None:
         """
         Embed an insight and store it in the Supabase research_memory table.
@@ -63,6 +63,7 @@ class VectorMemory:
             insight: The insight text to embed and store.
             source_url: URL of the source this insight came from.
             source_title: Title of the source page.
+            user_id: The unique identifier of the user (for data isolation).
         """
         try:
             embedding = self._embed(insight)
@@ -75,18 +76,21 @@ class VectorMemory:
                 "embedding": embedding,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
+            if user_id:
+                record["user_id"] = user_id
             self.supabase.table(TABLE_NAME).insert(record).execute()
             logger.info(f"Stored insight for session {session_id}: {insight[:60]}...")
         except Exception as e:
             logger.error(f"Failed to store insight in vector memory: {e}")
 
-    def retrieve(self, query: str, limit: int = 5) -> list[dict]:
+    def retrieve(self, query: str, limit: int = 5, user_id: str = None) -> list[dict]:
         """
         Retrieve the most semantically similar past insights for a query.
 
         Args:
             query: The query string to embed and search against.
             limit: Maximum number of results to return.
+            user_id: If provided, filter matches by this user_id.
 
         Returns:
             List of dicts with insight data from past sessions.
@@ -94,12 +98,16 @@ class VectorMemory:
         try:
             query_embedding = self._embed(query)
             # Use Supabase RPC for pgvector cosine similarity search
+            rpc_params = {
+                "query_embedding": query_embedding,
+                "match_limit": limit,
+            }
+            if user_id:
+                rpc_params["filter_user_id"] = user_id
+            
             response = self.supabase.rpc(
                 "match_research_memory",
-                {
-                    "query_embedding": query_embedding,
-                    "match_limit": limit,
-                },
+                rpc_params,
             ).execute()
             results = response.data or []
             logger.info(f"Retrieved {len(results)} past insights for query: {query[:60]}")
@@ -108,43 +116,48 @@ class VectorMemory:
             logger.error(f"Failed to retrieve from vector memory: {e}")
             return []
 
-    def get_session_history(self, session_id: str) -> list[dict]:
+    def get_session_history(self, session_id: str, user_id: str = None) -> list[dict]:
         """
         Return all stored insights for a given session_id.
 
         Args:
             session_id: The session to look up.
+            user_id: If provided, scope session history to user.
 
         Returns:
             List of insight records.
         """
         try:
-            response = (
+            query = (
                 self.supabase.table(TABLE_NAME)
                 .select("id, session_id, topic, insight, source_url, source_title, created_at")
                 .eq("session_id", session_id)
-                .order("created_at", desc=False)
-                .execute()
             )
+            if user_id:
+                query = query.eq("user_id", user_id)
+            
+            response = query.order("created_at", desc=False).execute()
             return response.data or []
         except Exception as e:
             logger.error(f"Failed to get session history for {session_id}: {e}")
             return []
 
-    def get_all_sessions(self) -> list[dict]:
+    def get_all_sessions(self, user_id: str = None) -> list[dict]:
         """
         Return a summary of all unique sessions (session_id + topic).
+
+        Args:
+            user_id: If provided, filter unique sessions by user.
 
         Returns:
             List of dicts with session_id and topic.
         """
         try:
-            response = (
-                self.supabase.table(TABLE_NAME)
-                .select("session_id, topic, created_at")
-                .order("created_at", desc=True)
-                .execute()
-            )
+            query = self.supabase.table(TABLE_NAME).select("session_id, topic, created_at")
+            if user_id:
+                query = query.eq("user_id", user_id)
+            
+            response = query.order("created_at", desc=True).execute()
             data = response.data or []
             # Deduplicate by session_id, keep most recent
             seen = {}

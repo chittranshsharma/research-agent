@@ -82,13 +82,14 @@ def retrieve_memory_node(state: AgentState) -> dict:
     Called at the START of a session to prime the agent with prior knowledge.
     """
     topic = state["topic"]
-    logger.info(f"[retrieve_memory] Retrieving memory for topic: {topic}")
+    user_id = state.get("user_id")
+    logger.info(f"[retrieve_memory] Retrieving memory for topic: {topic} (user_id: {user_id})")
 
     context_parts: list[str] = []
 
     try:
         vector_mem = VectorMemory()
-        past_insights = vector_mem.retrieve(topic, limit=VECTOR_MEMORY_RETRIEVE_LIMIT)
+        past_insights = vector_mem.retrieve(topic, limit=VECTOR_MEMORY_RETRIEVE_LIMIT, user_id=user_id)
         if past_insights:
             context_parts.append("## Relevant Past Insights (from previous sessions):")
             for item in past_insights:
@@ -101,7 +102,7 @@ def retrieve_memory_node(state: AgentState) -> dict:
 
     try:
         graph_mem = GraphMemory()
-        related_graph = graph_mem.retrieve_related(topic, limit=GRAPH_MEMORY_RETRIEVE_LIMIT)
+        related_graph = graph_mem.retrieve_related(topic, limit=GRAPH_MEMORY_RETRIEVE_LIMIT, user_id=user_id)
         graph_mem.close()
         if related_graph:
             context_parts.append("\n## Related Knowledge Graph Context (entities & relationships):")
@@ -313,10 +314,11 @@ def store_memory_node(state: AgentState) -> dict:
     insights = state.get("extracted_insights", [])
     entities = state.get("entities", [])
     relationships = state.get("relationships", [])
+    user_id = state.get("user_id")
 
     logger.info(
         f"[store_memory] Storing {len(insights)} insights, "
-        f"{len(entities)} entities, {len(relationships)} relationships."
+        f"{len(entities)} entities, {len(relationships)} relationships (user_id: {user_id})."
     )
 
     # --- Vector memory ---
@@ -331,6 +333,7 @@ def store_memory_node(state: AgentState) -> dict:
                     insight=insight_text,
                     source_url=item.get("source_url", ""),
                     source_title=item.get("source_title", ""),
+                    user_id=user_id,
                 )
     except Exception as e:
         logger.error(f"[store_memory] VectorMemory storage error: {e}")
@@ -346,6 +349,7 @@ def store_memory_node(state: AgentState) -> dict:
                     entity_type=entity.get("type", "Entity"),
                     description=entity.get("description", ""),
                     session_id=session_id,
+                    user_id=user_id,
                 )
         for rel in relationships:
             source = rel.get("source", "")
@@ -357,6 +361,7 @@ def store_memory_node(state: AgentState) -> dict:
                     relation=relation,
                     target_name=target,
                     session_id=session_id,
+                    user_id=user_id,
                 )
         graph_mem.close()
     except Exception as e:

@@ -32,12 +32,16 @@ class GraphMemory:
     # Entity storage
     # ------------------------------------------------------------------
 
+    # Entity storage
+    # ------------------------------------------------------------------
+
     def store_entity(
         self,
         name: str,
         entity_type: str,
         description: str,
         session_id: str,
+        user_id: str = None,
     ) -> None:
         """
         Create or merge an entity node in Neo4j.
@@ -50,13 +54,14 @@ class GraphMemory:
             entity_type: Label for the node (Concept, Person, Technology, etc.).
             description: Human-readable description of the entity.
             session_id: The session this entity was extracted from.
+            user_id: The user this entity belongs to.
         """
         # Sanitize label — Neo4j labels cannot contain spaces or special chars
         label = "".join(c for c in entity_type if c.isalnum() or c == "_") or "Entity"
         label = label.capitalize()
 
         query = (
-            f"MERGE (e:{label} {{name: $name}}) "
+            f"MERGE (e:{label} {{name: $name, user_id: $user_id}}) "
             "ON CREATE SET e.description = $description, "
             "              e.session_id  = $session_id, "
             "              e.created_at  = $created_at "
@@ -67,12 +72,13 @@ class GraphMemory:
             "name": name,
             "description": description,
             "session_id": session_id,
+            "user_id": user_id or "default",
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
             with self.driver.session(database=self.database) as session:
                 session.run(query, params)
-            logger.info(f"Stored entity [{label}]: {name}")
+            logger.info(f"Stored entity [{label}]: {name} (user_id: {params['user_id']})")
         except Neo4jError as e:
             logger.error(f"Neo4j error storing entity '{name}': {e}")
         except Exception as e:
@@ -88,6 +94,7 @@ class GraphMemory:
         relation: str,
         target_name: str,
         session_id: str,
+        user_id: str = None,
     ) -> None:
         """
         Create or merge a relationship between two nodes.
@@ -99,27 +106,29 @@ class GraphMemory:
             relation: Relationship type (will be upper-cased and snake_cased).
             target_name: Name property of the target node.
             session_id: The session this relationship was extracted from.
+            user_id: The user this relationship belongs to.
         """
         # Sanitize relationship type
         rel_type = relation.upper().replace(" ", "_").replace("-", "_")
         rel_type = "".join(c for c in rel_type if c.isalnum() or c == "_") or "RELATED_TO"
 
         query = (
-            "MERGE (a {name: $source_name}) "
-            "MERGE (b {name: $target_name}) "
+            "MERGE (a {name: $source_name, user_id: $user_id}) "
+            "MERGE (b {name: $target_name, user_id: $user_id}) "
             f"MERGE (a)-[r:{rel_type}]->(b) "
-            "ON CREATE SET r.session_id = $session_id, r.created_at = $created_at"
+            "ON CREATE SET r.session_id = $session_id, r.user_id = $user_id, r.created_at = $created_at"
         )
         params = {
             "source_name": source_name,
             "target_name": target_name,
             "session_id": session_id,
+            "user_id": user_id or "default",
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
             with self.driver.session(database=self.database) as session:
                 session.run(query, params)
-            logger.info(f"Stored relationship: {source_name} -[{rel_type}]-> {target_name}")
+            logger.info(f"Stored relationship: {source_name} -[{rel_type}]-> {target_name} (user_id: {params['user_id']})")
         except Neo4jError as e:
             logger.error(f"Neo4j error storing relationship '{source_name}' -> '{target_name}': {e}")
         except Exception as e:
@@ -129,7 +138,7 @@ class GraphMemory:
     # Retrieval
     # ------------------------------------------------------------------
 
-    def retrieve_related(self, topic: str, limit: int = 10) -> list[dict]:
+    def retrieve_related(self, topic: str, limit: int = 10, user_id: str = None) -> list[dict]:
         """
         Find nodes and their relationships related to the given topic string.
 
@@ -138,21 +147,23 @@ class GraphMemory:
         Args:
             topic: The topic string to search for.
             limit: Maximum number of result paths to return.
+            user_id: The user_id to filter by.
 
         Returns:
             List of dicts describing matched nodes and their relationships.
         """
         query = (
             "MATCH (a)-[r]->(b) "
-            "WHERE toLower(a.name) CONTAINS toLower($topic) "
-            "   OR toLower(b.name) CONTAINS toLower($topic) "
+            "WHERE a.user_id = $user_id AND b.user_id = $user_id "
+            "  AND (toLower(a.name) CONTAINS toLower($topic) "
+            "   OR toLower(b.name) CONTAINS toLower($topic)) "
             "RETURN a.name AS source, type(r) AS relation, b.name AS target, "
             "       a.description AS source_desc, b.description AS target_desc "
             "LIMIT $limit"
         )
         try:
             with self.driver.session(database=self.database) as session:
-                result = session.run(query, {"topic": topic, "limit": limit})
+                result = session.run(query, {"topic": topic, "limit": limit, "user_id": user_id or "default"})
                 records = []
                 for record in result:
                     records.append(
