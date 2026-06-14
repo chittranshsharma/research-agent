@@ -27,7 +27,6 @@ export function Auth() {
         });
         if (error) throw error;
         
-        // Supabase sends a confirmation email by default unless email verification is turned off.
         if (data?.user && data.session === null) {
           setInfo('Registration successful! Please check your email for the confirmation link.');
         } else {
@@ -49,58 +48,81 @@ export function Auth() {
   };
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-background p-4 relative overflow-hidden">
-      {/* Dynamic Background Gradients */}
-      <div className="absolute top-1/4 left-1/4 -z-10 h-72 w-72 rounded-full bg-primary/20 blur-[100px]" />
-      <div className="absolute bottom-1/4 right-1/4 -z-10 h-72 w-72 rounded-full bg-blue-500/15 blur-[100px]" />
+    <div className="flex min-h-screen flex-col items-center justify-center bg-[#090a0f] p-4 relative overflow-hidden font-sans">
+      {/* Autofill and Input Focus overrides to prevent browsers from turning inputs white */}
+      <style jsx global>{`
+        input:-webkit-autofill,
+        input:-webkit-autofill:hover, 
+        input:-webkit-autofill:focus, 
+        input:-webkit-autofill:active {
+          -webkit-box-shadow: 0 0 0 30px #121318 inset !important;
+          -webkit-text-fill-color: #f4f4f5 !important;
+          transition: background-color 5000s ease-in-out 0s;
+          caret-color: #ffffff;
+        }
+        input {
+          background-color: #121318 !important;
+          color: #ffffff !important;
+        }
+        input::placeholder {
+          color: #71717a !important;
+        }
+      `}</style>
 
-      <div className="w-full max-w-md">
+      {/* Decorative blurred background shapes */}
+      <div className="absolute top-1/4 left-1/3 -z-10 h-[350px] w-[350px] rounded-full bg-violet-600/10 blur-[120px]" />
+      <div className="absolute bottom-1/4 right-1/3 -z-10 h-[350px] w-[350px] rounded-full bg-blue-500/10 blur-[120px]" />
+
+      <div className="w-full max-w-md px-4">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-extrabold tracking-tight text-white mb-2">
+          <div className="inline-flex items-center justify-center h-12 w-12 rounded-xl bg-violet-600/15 border border-violet-500/30 text-violet-400 font-bold text-2xl mb-4 shadow-inner shadow-violet-500/10">
+            M
+          </div>
+          <h1 className="text-3xl font-extrabold tracking-tight text-white mb-2 bg-gradient-to-r from-white via-zinc-200 to-zinc-400 bg-clip-text text-transparent">
             Mnemox
           </h1>
-          <p className="text-muted-foreground text-sm">
+          <p className="text-zinc-400 text-sm">
             AI-powered research with persistent memory.
           </p>
         </div>
 
-        <Card className="border-border bg-card/40 backdrop-blur-xl shadow-2xl relative">
-          <CardHeader className="space-y-1">
-            <CardTitle className="text-2xl font-bold text-center">
+        <Card className="border border-white/5 bg-[#0f1015]/60 backdrop-blur-2xl shadow-2xl relative rounded-2xl overflow-hidden">
+          <CardHeader className="space-y-2 pt-8 pb-6">
+            <CardTitle className="text-2xl font-bold text-center text-white tracking-tight">
               {isSignUp ? 'Create an Account' : 'Welcome Back'}
             </CardTitle>
-            <CardDescription className="text-center text-xs">
+            <CardDescription className="text-center text-sm text-zinc-400">
               {isSignUp
                 ? 'Sign up to start saving and querying your research memory'
                 : 'Sign in to access your research sessions'}
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <form onSubmit={handleSubmit} className="space-y-4">
+          <CardContent className="space-y-4 px-6 pb-6">
+            <form onSubmit={handleSubmit} className="space-y-5">
               <div className="space-y-2">
-                <label className="text-xs font-medium text-muted-foreground" htmlFor="email">
+                <label className="text-xs font-semibold text-zinc-300 uppercase tracking-wider" htmlFor="email">
                   Email Address
                 </label>
                 <div className="relative">
-                  <Mail className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                  <Mail className="absolute left-3 top-3 h-4.5 w-4.5 text-zinc-400" />
                   <input
                     id="email"
                     type="email"
-                    placeholder="you@example.com"
+                    placeholder="name@example.com"
                     required
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    className="w-full h-10 bg-background/50 border border-border rounded-md pl-10 pr-4 text-sm text-white placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
+                    className="w-full h-11 bg-[#121318] border border-white/5 rounded-xl pl-11 pr-4 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500/50 focus:border-violet-500 transition-all duration-200"
                   />
                 </div>
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs font-medium text-muted-foreground" htmlFor="password">
+                <label className="text-xs font-semibold text-zinc-300 uppercase tracking-wider" htmlFor="password">
                   Password
                 </label>
                 <div className="relative">
-                  <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                  <Lock className="absolute left-3 top-3 h-4.5 w-4.5 text-zinc-400" />
                   <input
                     id="password"
                     type="password"
@@ -109,20 +131,20 @@ export function Auth() {
                     minLength={6}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="w-full h-10 bg-background/50 border border-border rounded-md pl-10 pr-4 text-sm text-white placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
+                    className="w-full h-11 bg-[#121318] border border-white/5 rounded-xl pl-11 pr-4 text-sm text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-violet-500/50 focus:border-violet-500 transition-all duration-200"
                   />
                 </div>
               </div>
 
               {error && (
-                <div className="flex items-start gap-2 bg-destructive/15 text-destructive text-xs p-3 rounded-md border border-destructive/35">
+                <div className="flex items-start gap-2.5 bg-red-950/20 text-red-400 text-xs p-3.5 rounded-xl border border-red-500/10">
                   <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
                   <span>{error}</span>
                 </div>
               )}
 
               {info && (
-                <div className="flex items-start gap-2 bg-emerald-500/10 text-emerald-400 text-xs p-3 rounded-md border border-emerald-500/20">
+                <div className="flex items-start gap-2.5 bg-emerald-950/20 text-emerald-400 text-xs p-3.5 rounded-xl border border-emerald-500/10">
                   <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
                   <span>{info}</span>
                 </div>
@@ -131,7 +153,7 @@ export function Auth() {
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full h-10 bg-primary hover:bg-primary/95 text-primary-foreground font-medium rounded-md text-sm flex items-center justify-center gap-2 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                className="w-full h-11 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-medium rounded-xl text-sm flex items-center justify-center gap-2 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer shadow-lg shadow-violet-600/20 active:scale-[0.98]"
               >
                 {loading ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -147,8 +169,8 @@ export function Auth() {
               </button>
             </form>
           </CardContent>
-          <CardFooter className="flex flex-col space-y-2 pb-6">
-            <div className="text-xs text-center text-muted-foreground">
+          <CardFooter className="flex flex-col space-y-2 pb-8 px-6">
+            <div className="text-xs text-center text-zinc-400">
               {isSignUp ? 'Already have an account?' : "Don't have an account?"}{' '}
               <button
                 type="button"
@@ -157,7 +179,7 @@ export function Auth() {
                   setError(null);
                   setInfo(null);
                 }}
-                className="text-primary hover:underline font-semibold"
+                className="text-violet-400 hover:text-violet-300 hover:underline font-semibold transition-colors"
               >
                 {isSignUp ? 'Sign In' : 'Sign Up'}
               </button>
